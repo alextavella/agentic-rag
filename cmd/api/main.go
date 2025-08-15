@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 
+	"github.com/alextavella/agentic-rag/internal/database"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -24,11 +26,24 @@ func main() {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	client := openai.NewClient(apiKey)
 
+	// Inicializa a conexão com o MongoDB
+	// mongoURI := "mongodb://admin:password123@localhost:27017"
+	mongoURI := os.Getenv("MONGO_URI")
+	db, err := database.NewMongoDB(ctx, mongoURI)
+	if err != nil {
+		log.Fatalf("Erro ao conectar ao MongoDB: %v", err)
+	}
+	defer db.Close(ctx)
+
+	// Configura o índice de texto (necessário apenas uma vez)
+	if err := db.SetupTextIndex(ctx); err != nil {
+		log.Printf("Aviso ao configurar índice: %v", err)
+	}
+
 	// Define a ferramenta de busca que o agente poderá usar
-	// Isso permite que o LLM decida quando precisa buscar informações
 	searchTool := openai.Tool{
 		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
+		Function: openai.FunctionDefinition{
 			Name:        "search_metadata",
 			Description: "Search metadata in database or API from a query",
 			Parameters: map[string]any{
@@ -59,7 +74,7 @@ func main() {
 		Tools:    []openai.Tool{searchTool}, // Ferramentas disponíveis para o agente
 	})
 	if err != nil {
-		panic(err)
+		log.Fatalf("Erro na chamada à OpenAI: %v", err)
 	}
 
 	// Processa as chamadas de ferramentas, se houver alguma
@@ -75,11 +90,15 @@ func main() {
 					Query string `json:"query"`
 				}
 				if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-					panic(err)
+					log.Fatalf("Erro ao processar argumentos: %v", err)
 				}
 
-				// Executa a busca no banco de dados/API e obtém os resultados
-				results := searchInDB(args.Query)
+				// Executa a busca real no MongoDB
+				results, err := db.SearchDocuments(ctx, args.Query)
+				if err != nil {
+					log.Printf("Erro na busca: %v", err)
+					results = "[]" // Fallback para array vazio em caso de erro
+				}
 
 				// Adiciona a resposta da ferramenta ao histórico de mensagens
 				messages = append(messages, openai.ChatCompletionMessage{
@@ -97,7 +116,7 @@ func main() {
 			Messages: messages,
 		})
 		if err != nil {
-			panic(err)
+			log.Fatalf("Erro na resposta final: %v", err)
 		}
 
 		fmt.Println("Resposta final do agente:")
@@ -107,19 +126,4 @@ func main() {
 		fmt.Println("Resposta do agente (sem busca):")
 		fmt.Println(resp.Choices[0].Message.Content)
 	}
-}
-
-// searchInDB simula uma busca em banco de dados ou API
-// Em um caso real, esta função faria uma consulta em um banco de dados,
-// chamaria uma API externa, ou usaria um banco de dados vetorial
-func searchInDB(query string) string {
-	// Aqui você implementaria sua lógica real de busca
-	// Este é apenas um exemplo simulado
-	if query == "Golang performance" {
-		return `[
-			{"title": "Optimizing Go Routines", "link": "/docs/go-optimizing"},
-			{"title": "Memory Management in Go", "link": "/docs/go-memory"}
-		]`
-	}
-	return "[]"
 }
