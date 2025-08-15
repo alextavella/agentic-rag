@@ -43,7 +43,7 @@ func main() {
 	// Define a ferramenta de busca que o agente poderá usar
 	searchTool := openai.Tool{
 		Type: openai.ToolTypeFunction,
-		Function: openai.FunctionDefinition{
+		Function: &openai.FunctionDefinition{
 			Name:        "search_metadata",
 			Description: "Search metadata in database or API from a query",
 			Parameters: map[string]any{
