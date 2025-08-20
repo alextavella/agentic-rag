@@ -14,7 +14,7 @@ Este projeto implementa um sistema RAG (Retrieval-Augmented Generation) usando G
 ```
 .
 ├── cmd/
-│   ├── api/
+│   ├── app/
         |__ main.go    # Aplicação principal
 │   └── seed/
 │       └── main.go    # Script para popular o banco
@@ -76,7 +76,7 @@ go run cmd/seed/main.go
 1. Execute a aplicação principal:
 
 ```bash
-go run cmd/api/main.go
+go run cmd/app/main.go
 ```
 
 2. A aplicação irá:
