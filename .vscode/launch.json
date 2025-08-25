@@ -2,13 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "API",
+      "name": "APP",
       "type": "go",
       "request": "launch",
       "mode": "auto",
       "program": "${workspaceFolder}/cmd/app/main.go",
       "envFile": "${workspaceFolder}/.env",
-      "args": []
+      "args": ["Explique sobre garbage collector em Go"]
     },
     {
       "name": "Seed",

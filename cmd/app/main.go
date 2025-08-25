@@ -2,128 +2,131 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
+	"time"
 
-	"github.com/alextavella/agentic-rag/internal/database"
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/alextavella/agentic-rag/internal/config"
+	"github.com/alextavella/agentic-rag/internal/domain"
+	"github.com/alextavella/agentic-rag/internal/infrastructure/database"
+	"github.com/alextavella/agentic-rag/internal/infrastructure/llm"
+	"github.com/alextavella/agentic-rag/internal/service"
 )
 
-// SearchResult representa a estrutura de um resultado de busca
-// retornado pela função de pesquisa em metadados
-type SearchResult struct {
-	Title string `json:"title"` // Título do documento encontrado
-	Link  string `json:"link"`  // Link/caminho para o documento
-}
-
 func main() {
-	// Cria um contexto padrão para controlar cancelamento e timeouts
-	ctx := context.Background()
+	// Configura logging estruturado
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 
-	// Inicializa o cliente da OpenAI usando a chave de API do ambiente
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	client := openai.NewClient(apiKey)
-
-	// Inicializa a conexão com o MongoDB
-	// mongoURI := "mongodb://admin:password123@localhost:27017"
-	mongoURI := os.Getenv("MONGO_URI")
-	db, err := database.NewMongoDB(ctx, mongoURI)
+	// Carrega configurações
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Erro ao conectar ao MongoDB: %v", err)
-	}
-	defer db.Close(ctx)
-
-	// Configura o índice de texto (necessário apenas uma vez)
-	if err := db.SetupTextIndex(ctx); err != nil {
-		log.Printf("Aviso ao configurar índice: %v", err)
+		logger.Error("erro ao carregar configurações", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	// Define a ferramenta de busca que o agente poderá usar
-	searchTool := openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "search_metadata",
-			Description: "Search metadata in database or API from a query",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{
-						"type":        "string",
-						"description": "Text to search in metadata",
-					},
-				},
-				"required": []string{"query"},
-			},
-		},
-	}
+	logger.Info("aplicação iniciando",
+		slog.String("model", cfg.OpenAI.Model),
+		slog.String("database", cfg.Database.Database),
+	)
 
-	// Mensagem inicial do usuário - aqui é onde começa a conversa
-	messages := []openai.ChatCompletionMessage{
-		{
-			Role:    openai.ChatMessageRoleUser,
-			Content: "What are the documents related to Golang performance?",
-		},
-	}
+	// Cria contexto com timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	// Primeira chamada à API: permite que o agente decida se precisa usar a ferramenta de busca
-	resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:    openai.GPT4TurboPreview,   // Usando o modelo mais recente da OpenAI
-		Messages: messages,                  // Lista de mensagens da conversa
-		Tools:    []openai.Tool{searchTool}, // Ferramentas disponíveis para o agente
-	})
+	// Inicializa o repositório de documentos
+	docRepo, err := database.NewMongoDocumentRepository(
+		ctx,
+		cfg.Database.URI,
+		cfg.Database.Database,
+		cfg.Database.Collection,
+	)
 	if err != nil {
-		log.Fatalf("Erro na chamada à OpenAI: %v", err)
+		logger.Error("erro ao conectar ao MongoDB", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer func() {
+		if err := docRepo.Close(ctx); err != nil {
+			logger.Error("erro ao fechar conexão com MongoDB", slog.Any("error", err))
+		}
+	}()
+
+	// Configura índices (necessário apenas uma vez)
+	if err := docRepo.SetupIndexes(ctx); err != nil {
+		logger.Warn("aviso ao configurar índices", slog.Any("error", err))
 	}
 
-	// Processa as chamadas de ferramentas, se houver alguma
-	if len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
-		// Adiciona a resposta do assistente ao histórico de mensagens
-		messages = append(messages, resp.Choices[0].Message)
+	// Inicializa o cliente LLM
+	llmClient := llm.NewOpenAIClient(cfg.OpenAI.APIKey, cfg.OpenAI.Model)
 
-		// Processa cada chamada de ferramenta feita pelo agente
-		for _, toolCall := range resp.Choices[0].Message.ToolCalls {
-			if toolCall.Function.Name == "search_metadata" {
-				// Extrai os argumentos da função (a consulta de busca)
-				var args struct {
-					Query string `json:"query"`
-				}
-				if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-					log.Fatalf("Erro ao processar argumentos: %v", err)
-				}
+	// Configura o serviço RAG
+	ragConfig := service.RAGConfig{
+		MaxSearchResults: cfg.App.SearchLimit,
+		SearchTimeout:    10 * time.Second,
+		LLMTimeout:       30 * time.Second,
+	}
 
-				// Executa a busca real no MongoDB
-				results, err := db.SearchDocuments(ctx, args.Query)
-				if err != nil {
-					log.Printf("Erro na busca: %v", err)
-					results = "[]" // Fallback para array vazio em caso de erro
-				}
+	ragService := service.NewRAGService(docRepo, llmClient, logger, ragConfig)
 
-				// Adiciona a resposta da ferramenta ao histórico de mensagens
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:       openai.ChatMessageRoleTool,
-					Content:    results,
-					Name:       toolCall.Function.Name,
-					ToolCallID: toolCall.ID,
-				})
+	// Verifica se os serviços estão funcionando
+	if err := ragService.HealthCheck(ctx); err != nil {
+		logger.Error("health check falhou", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	logger.Info("serviços inicializados com sucesso")
+
+	// Processa a query padrão ou uma fornecida via argumento
+	query := cfg.App.DefaultQuery
+	if len(os.Args) > 1 {
+		query = os.Args[1]
+	}
+
+	// Cria a requisição RAG
+	req := &domain.RAGRequest{
+		Query:      query,
+		MaxResults: cfg.App.SearchLimit,
+		UserID:     "cli-user",
+		SessionID:  fmt.Sprintf("session-%d", time.Now().Unix()),
+	}
+
+	logger.Info("processando query", slog.String("query", query))
+
+	// Processa a query
+	response, err := ragService.ProcessQuery(ctx, req)
+	if err != nil {
+		logger.Error("erro ao processar query", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// Exibe os resultados
+	fmt.Printf("\n=== RESPOSTA DO AGENTE ===\n")
+	fmt.Printf("%s\n", response.Answer)
+
+	if response.SearchPerformed && len(response.Sources) > 0 {
+		fmt.Printf("\n=== FONTES CONSULTADAS ===\n")
+		for i, source := range response.Sources {
+			fmt.Printf("%d. %s\n", i+1, source.Title)
+			fmt.Printf("   Link: %s\n", source.Link)
+			fmt.Printf("   Categoria: %s\n", source.Category)
+			if len(source.Content) > 100 {
+				fmt.Printf("   Conteúdo: %s...\n", source.Content[:100])
+			} else {
+				fmt.Printf("   Conteúdo: %s\n", source.Content)
 			}
+			fmt.Printf("\n")
 		}
-
-		// Obtém a resposta final do agente, incluindo o contexto da busca
-		finalResp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:    openai.GPT4TurboPreview,
-			Messages: messages,
-		})
-		if err != nil {
-			log.Fatalf("Erro na resposta final: %v", err)
-		}
-
-		fmt.Println("Resposta final do agente:")
-		fmt.Println(finalResp.Choices[0].Message.Content)
-	} else {
-		// Caso o agente decida não usar a ferramenta
-		fmt.Println("Resposta do agente (sem busca):")
-		fmt.Println(resp.Choices[0].Message.Content)
 	}
+
+	fmt.Printf("\n=== ESTATÍSTICAS ===\n")
+	fmt.Printf("Tempo de processamento: %dms\n", response.ProcessingTime)
+	fmt.Printf("Busca realizada: %v\n", response.SearchPerformed)
+	fmt.Printf("Modelo usado: %s\n", response.Model)
+	if response.TokensUsed > 0 {
+		fmt.Printf("Tokens utilizados: %d\n", response.TokensUsed)
+	}
+
+	logger.Info("aplicação finalizada com sucesso")
 }

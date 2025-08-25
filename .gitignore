@@ -27,4 +27,8 @@
 # Go workspace file
 go.work
 
+# Build
+app
+seed
+
 # End of https://www.toptal.com/developers/gitignore/api/go,dotenv

@@ -3,6 +3,7 @@ module github.com/alextavella/agentic-rag
 go 1.25.0
 
 require (
+	github.com/joho/godotenv v1.5.1
 	github.com/sashabaranov/go-openai v1.41.1
 	go.mongodb.org/mongo-driver v1.17.4
 )

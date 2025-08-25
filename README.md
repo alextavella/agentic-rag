@@ -11,29 +11,61 @@ Este projeto implementa um sistema RAG (Retrieval-Augmented Generation) usando G
 
 ## 📁 Estrutura do Projeto
 
+O projeto segue o **Standard Go Project Layout** e princípios de **Clean Architecture**:
+
 ```
 .
-├── cmd/
+├── cmd/                              # Aplicações executáveis
 │   ├── app/
-        |__ main.go    # Aplicação principal
+│   │   └── main.go                  # Aplicação principal RAG
 │   └── seed/
-│       └── main.go    # Script para popular o banco
-├── internal/
-│   └── database/
-│       └── mongodb.go # Pacote de acesso ao MongoDB
-├── docker-compose.yml # Configuração do MongoDB
-└── go.mod            # Dependências do Go
+│       └── main.go                  # Script para popular o banco
+├── internal/                        # Código privado da aplicação
+│   ├── config/                      # Gerenciamento de configurações
+│   │   └── config.go
+│   ├── domain/                      # Entidades e interfaces de negócio
+│   │   ├── document.go              # Entidade Document
+│   │   ├── rag.go                   # Interfaces RAG e LLM
+│   │   └── errors.go                # Erros específicos do domínio
+│   ├── infrastructure/              # Implementações de infraestrutura
+│   │   ├── database/
+│   │   │   └── mongodb.go           # Repositório MongoDB
+│   │   └── llm/
+│   │       └── openai.go            # Cliente OpenAI
+│   └── service/                     # Lógica de negócio
+│       └── rag.go                   # Serviço RAG principal
+├── config.example                   # Exemplo de configuração
+├── docker-compose.yml              # Configuração do MongoDB
+└── go.mod                          # Dependências do Go
 ```
 
 ## 🛠️ Configuração
 
 ### 1. Variáveis de Ambiente
 
-Crie um arquivo `.env` na raiz do projeto:
+Copie o arquivo de exemplo e configure as variáveis:
+
+```bash
+cp .env.example .env
+```
+
+Configure as seguintes variáveis no arquivo `.env`:
 
 ```env
+# OpenAI
 OPENAI_API_KEY=sua-chave-da-openai
+OPENAI_MODEL=gpt-4-turbo-preview
+
+# MongoDB
 MONGO_URI=mongodb://admin:password123@localhost:27017
+MONGO_DATABASE=rag_docs
+MONGO_COLLECTION=documents
+
+# Aplicação
+LOG_LEVEL=info
+REQUEST_TIMEOUT=30s
+SEARCH_LIMIT=5
+DEFAULT_QUERY=What are the documents related to Golang performance?
 ```
 
 ### 2. Instalação
@@ -73,17 +105,50 @@ go run cmd/seed/main.go
 
 ## 💻 Uso
 
-1. Execute a aplicação principal:
+### Executar a aplicação principal
 
 ```bash
+# Com a query padrão
 go run cmd/app/main.go
+
+# Com uma query personalizada
+go run cmd/app/main.go "Como otimizar goroutines em Go?"
+go run cmd/app/main.go "Explique sobre garbage collector em Go"
+
+# Usando binário compilado
+go build -o app cmd/app/main.go
+./app "Explique sobre garbage collector em Go"
 ```
 
-2. A aplicação irá:
-   - Receber uma pergunta do usuário
-   - O agente (GPT-4) decidirá se precisa buscar informações
-   - Se necessário, consultará o MongoDB
-   - Gerará uma resposta combinando seu conhecimento com os dados encontrados
+### Como funciona
+
+1. **Configuração**: A aplicação carrega configurações do ambiente
+2. **Inicialização**: Conecta ao MongoDB e inicializa cliente OpenAI
+3. **Processamento**:
+   - Recebe a query do usuário
+   - O agente (GPT-4) decide se precisa buscar informações
+   - Se necessário, executa busca semântica no MongoDB
+   - Gera resposta combinando conhecimento base com dados encontrados
+4. **Resposta**: Exibe a resposta final, fontes consultadas e estatísticas
+
+### Exemplo de Saída
+
+```
+=== RESPOSTA DO AGENTE ===
+Para otimizar goroutines em Go, você deve seguir algumas práticas...
+
+=== FONTES CONSULTADAS ===
+1. Optimizing Go Routines
+   Link: /docs/go-optimizing
+   Categoria: performance
+   Conteúdo: Goroutines são leves e eficientes...
+
+=== ESTATÍSTICAS ===
+Tempo de processamento: 1250ms
+Busca realizada: true
+Modelo usado: gpt-4-turbo-preview
+Tokens utilizados: 1847
+```
 
 ## 📊 MongoDB Express
 
@@ -106,24 +171,70 @@ type Document struct {
 }
 ```
 
+## 🏗️ Arquitetura
+
+O projeto implementa **Clean Architecture** com separação clara de responsabilidades:
+
+### Camadas
+
+1. **Domain Layer** (`internal/domain/`):
+
+   - Entidades de negócio (`Document`)
+   - Interfaces (`DocumentRepository`, `LLMClient`, `RAGService`)
+   - Regras de negócio e erros específicos
+
+2. **Infrastructure Layer** (`internal/infrastructure/`):
+
+   - Implementação MongoDB (`database/mongodb.go`)
+   - Cliente OpenAI (`llm/openai.go`)
+   - Detalhes de infraestrutura
+
+3. **Service Layer** (`internal/service/`):
+
+   - Lógica de aplicação (`rag.go`)
+   - Orquestração entre componentes
+   - Validações e transformações
+
+4. **Application Layer** (`cmd/`):
+   - Pontos de entrada (`main.go`)
+   - Configuração de dependências
+   - Interface com usuário
+
+### Princípios Aplicados
+
+- **Dependency Inversion**: Camadas superiores dependem de abstrações
+- **Single Responsibility**: Cada componente tem uma responsabilidade clara
+- **Interface Segregation**: Interfaces pequenas e focadas
+- **Separation of Concerns**: Separação entre lógica de negócio e infraestrutura
+
 ## 🔍 Funcionalidades
 
-1. **Busca Semântica**
+1. **Busca Semântica Inteligente**
 
-   - Índice de texto no MongoDB para busca eficiente
-   - Busca em títulos e conteúdo dos documentos
+   - Índices otimizados no MongoDB
+   - Busca full-text em títulos e conteúdo
+   - Ranking por relevância
    - Limite configurável de resultados
 
-2. **Integração com OpenAI**
+2. **Integração Avançada com OpenAI**
 
-   - Uso do modelo GPT-4 Turbo
-   - Sistema de ferramentas (tools) para busca
-   - Histórico de conversação mantido
+   - Suporte a múltiplos modelos GPT
+   - Sistema de ferramentas (function calling)
+   - Controle de tokens e custos
+   - Timeout e retry configuráveis
 
-3. **Persistência**
-   - Armazenamento em MongoDB
-   - Conexão segura com autenticação
-   - Volume Docker para persistência dos dados
+3. **Persistência Robusta**
+
+   - Repositório MongoDB com pool de conexões
+   - Índices automáticos para performance
+   - Health checks e monitoramento
+   - Transações e consistência de dados
+
+4. **Observabilidade**
+   - Logging estruturado (JSON)
+   - Métricas de performance
+   - Rastreamento de requests
+   - Error tracking detalhado
 
 ## 🤝 Contribuindo
 
